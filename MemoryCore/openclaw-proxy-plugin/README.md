@@ -4,7 +4,7 @@ This provider-only plugin maps each native OpenClaw session to the existing
 MemoryProxy OpenClaw route:
 
 ```text
-options.sessionId -> x-conversation-id: openclaw-<sessionId>
+options.sessionId -> x-conversation-id: openclaw-<sha256(UTF-8 sessionId)>
 ```
 
 The existing `/openclaw/{spaceId}/v1` provider base URL identifies the client

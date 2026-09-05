@@ -76,9 +76,14 @@ openclaw plugins enable memory-proxy-session-bridge --accept-capabilities
 配置后执行 `openclaw gateway restart`，确认插件已加载且模型指向 `memory-proxy`。
 
 删除 provider 中静态的 `x-conversation-id`。Bridge 每次请求读取原生
-`options.sessionId`，生成 `x-conversation-id: openclaw-<sessionId>`，并替换已有的
+`options.sessionId`，按 UTF-8 计算 SHA-256，生成固定 73 字符的 ASCII
+`x-conversation-id: openclaw-<sha256(UTF-8 sessionId)>`，并替换已有的
 同名 header（不区分大小写），保留其他 headers。不同 native session 具有不同身份；
 恢复原 session 使用原身份。缺少 native sessionId 时原样透传并告警，不生成随机兜底 ID。
+
+原生 ID 去除首尾空白后计算 hash，不直接暴露原始 ID。升级后，旧版直接拼接 ID 的
+binding 不会自动迁移；原生会话首次使用新标识时需重新完成 Web Init，或使用合法
+静态资产预选。插件不新增本地身份表或自动会话生命周期。
 
 ## 4. Web Session Init
 

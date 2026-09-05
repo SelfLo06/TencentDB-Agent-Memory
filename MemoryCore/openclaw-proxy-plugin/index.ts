@@ -2,12 +2,13 @@
  * MemoryProxy Session Bridge — 仅注册 OpenClaw provider 的插件。
  *
  * 将每个原生 OpenClaw 会话映射为 Proxy 对话身份：
- *   options.sessionId → x-conversation-id: openclaw-<sessionId>
+ *   options.sessionId → x-conversation-id: openclaw-<sha256(UTF-8 sessionId)>
  *
  * 插件仅承载路由和动态请求头，召回、采集与注入留在 Proxy 服务端，与 pi-plugin 分工一致。
  */
 
 import type { OpenClawPluginApi, ProviderWrapStreamFnContext } from "openclaw/plugin-sdk/core";
+import { createHash } from "node:crypto";
 
 // SDK 不单独导出 streamFn 的 options 类型，从上下文类型提取以保持契约一致。
 type ProviderStreamFn = NonNullable<ProviderWrapStreamFnContext["streamFn"]>;
@@ -17,7 +18,8 @@ const PROVIDER_ID = "memory-proxy";
 const CONVERSATION_HEADER = "x-conversation-id";
 
 /**
- * 将 options 的 x-conversation-id 设置为 `openclaw-<sessionId>`。
+ * 将 options 的 x-conversation-id 设置为 `openclaw-<sha256(UTF-8 sessionId)>`。
+ * 固定 ASCII 标识兼容合法 Unicode 会话 ID，且不直接暴露原始 ID。
  *
  * sessionId 由 OpenClaw 提供，同一原生会话跨窗口及重启后保持相同对话身份。
  * 缺少 sessionId 时原样返回，不生成随机兜底身份，避免将同一会话拆成多个对话。
@@ -40,7 +42,7 @@ export function withOpenClawConversationId(
     ...options,
     headers: {
       ...headers,
-      [CONVERSATION_HEADER]: `openclaw-${sessionId}`,
+      [CONVERSATION_HEADER]: `openclaw-${createHash("sha256").update(sessionId, "utf8").digest("hex")}`,
     },
   };
 }
