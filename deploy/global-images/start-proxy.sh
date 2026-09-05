@@ -21,6 +21,14 @@ require_vars \
   PROXY_IMAGE PROXY_PORT \
   PROXY_UPSTREAM_URL PROXY_UPSTREAM_API_KEY PROXY_UPSTREAM_MODEL
 
+EXTERNAL_GATEWAY_YAML=""
+if [[ -n "${PROXY_EXTERNAL_GATEWAY_URL:-}" ]]; then
+  if [[ ! "$PROXY_EXTERNAL_GATEWAY_URL" =~ ^https?://(\[[0-9a-fA-F:]+\]|[a-zA-Z0-9][a-zA-Z0-9._-]*)(:[0-9]{1,5})?(/[a-zA-Z0-9._~%/+:-]*)?$ ]]; then
+    die "PROXY_EXTERNAL_GATEWAY_URL 必须是 HTTP(S) 基础地址，不含凭据、查询串、片段、空白或 Shell 特殊字符。"
+  fi
+  EXTERNAL_GATEWAY_YAML="  externalGatewayUrl: '${PROXY_EXTERNAL_GATEWAY_URL}'"
+fi
+
 # 与 memory-core 保持一致的 gateway 内部凭据（默认 local，仅本地体验）
 MEMORY_CORE_GATEWAY_API_KEY="${MEMORY_CORE_GATEWAY_API_KEY:-local}"
 
@@ -131,6 +139,7 @@ costGuard:
 # knowledge 依赖 memory-hub 起来，否则 hook 内部会降级为空块。
 injection:
   enabled: true
+${EXTERNAL_GATEWAY_YAML}
   injectors:
     - skill
     - knowledge
