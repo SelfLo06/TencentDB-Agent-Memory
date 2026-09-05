@@ -551,6 +551,9 @@ extraction:
 # team/agent/task 列表来自内核 MetadataClient（复用 skill 段配置）。
 # 用户身份由 auth/verify 一跳确定；未通过鉴权/无法识别用户 → 直接 bypass session init。
 sessionInit:
+  # 浏览器打开 Web Init 的公开地址，反向代理/TLS termination 部署应显式配置。
+  # 独立于 injection.externalGatewayUrl；不含凭据、查询串、片段，未配置保留直接访问 origin。
+  # webPublicBaseUrl: "https://memory.example.com"
   enabled: true             # 是否启用会话初始化
   maxRetries: 3             # 表单解析失败最大重试次数，超出后 bypass（跳过 session init）
   # 历史注释: 曾经有 keepInitArtifacts 开关用来在 session_init 完成后剥离

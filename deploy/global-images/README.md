@@ -111,6 +111,20 @@ proxy 接到用户请求后转发到这组端点。
 
 ## Agent 主动工具地址
 
+### 浏览器会话初始化地址
+
+反向代理、公网域名或 TLS termination 场景应显式设置
+`PROXY_SESSION_INIT_PUBLIC_BASE_URL=https://memory.example.com`，部署脚本将其写入
+`sessionInit.webPublicBaseUrl`。该地址供**浏览器打开 Web Init**，与下面供
+**Agent 执行主动工具**的 `PROXY_EXTERNAL_GATEWAY_URL` 独立，可以不同。
+如代理挂载在子路径，可填写 `https://memory.example.com/proxy` 并转发其下的
+`/session-init/**` 到 Proxy。只允许 HTTP(S)，拒绝凭据、查询串和片段，末尾 `/` 会去除。
+
+未配置时保留直接访问的 request origin，便于本地部署；不要将此 fallback 当成
+外部地址自动发现。显式配置不会被 Host、X-Forwarded-Host 或 X-Forwarded-Proto 覆盖。
+
+### Agent 工具地址
+
 `PROXY_EXTERNAL_GATEWAY_URL` 是**从 Agent 实际执行主动工具的环境中可以访问的
 MemoryProxy 基础地址**。非空时，`start-proxy.sh` 将其写入生成配置的
 `injection.externalGatewayUrl`，供主动 Memory / Skill 工具使用；未设置或留空时

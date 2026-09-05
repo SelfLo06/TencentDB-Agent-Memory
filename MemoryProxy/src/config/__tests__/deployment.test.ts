@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
-import { buildConfig, loadYamlConfig } from "../../config.js";
+import { buildConfig, loadYamlConfig, normalizeWebPublicBaseUrl } from "../../config.js";
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
 const temporaryDirectories: string[] = [];
@@ -15,7 +15,7 @@ afterEach(() => {
   }
 });
 
-function generateConfig(externalUrl?: string) {
+function generateConfig(externalUrl?: string, publicBaseUrl?: string) {
   const directory = mkdtempSync(join(tmpdir(), "proxy-deployment-test-"));
   temporaryDirectories.push(directory);
   const envFile = join(directory, ".env");
@@ -41,6 +41,7 @@ esac
     PROXY_UPSTREAM_MODEL: "test-model",
     MEMORY_HUB_PROXY_PUBLIC_URL: "https://panel-display.example",
     ...(externalUrl === undefined ? {} : { PROXY_EXTERNAL_GATEWAY_URL: externalUrl }),
+    ...(publicBaseUrl === undefined ? {} : { PROXY_SESSION_INIT_PUBLIC_BASE_URL: publicBaseUrl }),
   };
   const run = () => execFileSync("bash", [join(repository, "deploy/global-images/start-proxy.sh")], {
     env: environment,
@@ -51,6 +52,35 @@ esac
 }
 
 describe("部署脚本的主动工具地址配置", () => {
+  it.each([null, true, 8096, {}, []])("手写配置的非字符串浏览器地址不静默回退：%s", (value) => {
+    expect(() => normalizeWebPublicBaseUrl(value)).toThrow("sessionInit.webPublicBaseUrl");
+  });
+
+  it.each([undefined, "", "https://memory.example.com", "https://memory.example.com/proxy///"])("浏览器地址独立生成并经配置加载器规范化：%s", (publicBaseUrl) => {
+    const generated = generateConfig("http://agent-tools:8096", publicBaseUrl);
+    generated.run();
+    const config = buildConfig({ configFile: generated.configPath });
+    expect(config.sessionInit.webPublicBaseUrl).toBe(publicBaseUrl?.replace(/\/+$/, "") || undefined);
+    expect(config.injection.externalGatewayUrl).toBe("http://agent-tools:8096");
+    if (!publicBaseUrl) expect(loadYamlConfig(generated.configPath).sessionInit).not.toHaveProperty("webPublicBaseUrl");
+  });
+
+  it.each([
+    "ftp://memory.example.com", "javascript:alert(1)", "https://user@memory.example.com",
+    "https://user:password@memory.example.com", "https://memory.example.com?key=secret",
+    "https://memory.example.com#fragment", "https://memory.example.com?", "https://memory.example.com#",
+    "https:///missing-host", "https://memory.example.com\ninvalid: true",
+  ])("部署入口及手写 YAML 都拒绝非法浏览器地址且不回显：%s", (publicBaseUrl) => {
+    const generated = generateConfig(undefined, publicBaseUrl);
+    expect(generated.run).toThrow();
+    expect(() => readFileSync(join(generated.directory, "docker-calls"))).toThrow();
+    writeFileSync(generated.configPath, JSON.stringify({ sessionInit: { webPublicBaseUrl: publicBaseUrl } }));
+    expect(() => buildConfig({ configFile: generated.configPath })).toThrow("sessionInit.webPublicBaseUrl");
+    try { buildConfig({ configFile: generated.configPath }); } catch (error) {
+      expect(String(error)).not.toContain(publicBaseUrl);
+    }
+  });
+
   it.each([undefined, ""])("未配置或留空时省略字段，保留原有 fallback：%s", (externalUrl) => {
     const generated = generateConfig(externalUrl);
     generated.run();

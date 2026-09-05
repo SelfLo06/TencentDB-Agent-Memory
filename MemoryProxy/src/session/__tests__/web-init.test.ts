@@ -675,6 +675,32 @@ describe("Web Session Init routes and client integration", () => {
     expect(page.elements.connect.disabled).toBe(true);
   });
 
+  it.each([
+    ["https://memory.example.com", "https://memory.example.com"],
+    ["https://memory.example.com/proxy///", "https://memory.example.com/proxy"],
+    [undefined, "http://backend-docker:8096"],
+  ])("浏览器地址优先使用显式配置，否则保留直接访问 origin：%s", async (publicBase, expectedBase) => {
+    const cfg = config();
+    cfg.sessionInit.webPublicBaseUrl = publicBase;
+    cfg.injection.externalGatewayUrl = "http://agent-tools:8096";
+    const response = await createApp(cfg).request(
+      "http://backend-docker:8096/openclaw/space-a/v1/chat/completions",
+      chatRequest("conversation-public-url", {
+        host: "untrusted.example",
+        "x-forwarded-host": "untrusted.example",
+        "x-forwarded-proto": "http",
+      }),
+    );
+    const url = response.headers.get("x-memory-session-init-url");
+    expect(url?.slice(0, url.lastIndexOf("/"))).toBe(`${expectedBase}/session-init`);
+    expect(url?.split("/").pop()).toMatch(/^[A-Za-z0-9_-]+$/);
+    const body = await response.text();
+    expect(body).toContain(url!);
+    expect(body).not.toContain("untrusted.example");
+    expect(body).not.toContain("agent-tools");
+    if (publicBase) expect(body).not.toContain("backend-docker");
+  });
+
   it.each(["openclaw", "pi"])("%s uses the shared Web Init flow and recovers on retry", async (agentSource) => {
     if (agentSource === "pi") {
       // 仅在测试中为既有身份路由开启资格，生产环境仍不为 Pi 启用 Web Init。
@@ -780,14 +806,17 @@ describe("Web Session Init routes and client integration", () => {
     });
   });
 
-  it("returns a complete SSE challenge without forwarding to upstream", async () => {
+  it.each([undefined, "https://public.example.com/proxy/"])("SSE challenge 的 header 与正文地址一致且不转发上游：%s", async (publicBase) => {
+    const cfg = config();
+    cfg.sessionInit.webPublicBaseUrl = publicBase;
     const request = chatRequest("stream-session");
     request.body = JSON.stringify({ ...JSON.parse(request.body as string), stream: true });
-    const response = await createApp(config()).request(
+    const response = await createApp(cfg).request(
       "http://localhost/openclaw/space-a/v1/chat/completions", request,
     );
     const url = response.headers.get("x-memory-session-init-url");
     expect(url).toMatch(/\/session-init\//);
+    if (publicBase) expect(url).toMatch(/^https:\/\/public\.example\.com\/proxy\/session-init\//);
     expect(response.headers.get("content-type")).toContain("text/event-stream");
     expect(response.headers.get("cache-control")).toBe("no-store");
     const stream = await response.text();

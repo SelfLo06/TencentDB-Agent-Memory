@@ -136,7 +136,9 @@ Bridge 不改变模型协议、请求内容或静态资产 header；没有安装
 - 不实现完整 `mem:session-reset` 生命周期。命令明确拒绝且不清除绑定；需要切换
   Team/Agent/Task 时创建新的 native session，再初始化。
 - Web 路径不追加原交互表单内部的 task participation log；不影响绑定和记忆回流。
-- 初始化 URL 使用入站 request origin。反向代理必须正确传递外部地址和 scheme。
+- 初始化 URL 优先使用 `sessionInit.webPublicBaseUrl`，部署入口为
+  `PROXY_SESSION_INIT_PUBLIC_BASE_URL`；反向代理、公网域名和 TLS termination 应显式配置。
+  未配置时保留直接访问的 request origin，不信任转发头；该地址与 Agent 工具地址独立。
 - 主动 Memory/Skill 工具使用 `injection.externalGatewayUrl`。它是从 Agent 实际执行
   主动工具的环境中可以访问的 MemoryProxy 基础地址；部署端通过
   `PROXY_EXTERNAL_GATEWAY_URL` 配置，留空保留原 fallback。Docker 私网 fallback

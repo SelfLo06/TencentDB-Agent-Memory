@@ -894,7 +894,8 @@ export async function handleChatCompletions(
         });
         if (issued.ok === false) return null;
         const { buildMemResponse } = await import("./mem-command/response-builder.js");
-        const url = `${new URL(c.req.url).origin}/session-init/${issued.value.token}`;
+        const publicBase = config.sessionInit.webPublicBaseUrl ?? new URL(c.req.url).origin;
+        const url = `${publicBase}/session-init/${issued.value.token}`;
         console.log(`[session-init:web] session=${compositeKey} challenge issued`);
         const text = [
           "需要完成记忆会话初始化。",

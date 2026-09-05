@@ -20,8 +20,16 @@ import { hasAnalyseMarker, hasCostGuardMarker } from "./routes/whitelist.js";
 import { ensureBindingRepoPersistent, tryActivateStorage, tryActivateRedis } from "./injection/index.js";
 import { getEffectiveBackend } from "./storage/factory.js";
 import type { ProxyConfig } from "./types.js";
+import { normalizeWebPublicBaseUrl } from "./config.js";
 
 export function createApp(config: ProxyConfig): Hono {
+  config = {
+    ...config,
+    sessionInit: {
+      ...config.sessionInit,
+      webPublicBaseUrl: normalizeWebPublicBaseUrl(config.sessionInit.webPublicBaseUrl),
+    },
+  };
   const app = new Hono();
 
   // Eagerly activate storage/bindingRepo so bridge-only requests (no main

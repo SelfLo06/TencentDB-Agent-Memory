@@ -194,6 +194,8 @@ export interface LangfuseConfig {
 /** Session initialization configuration. */
 export interface SessionInitConfig {
   enabled: boolean;
+  /** 浏览器可访问的 Web Init 基础地址；与 Agent 主动工具地址独立，未配置时使用直接访问 origin。 */
+  webPublicBaseUrl?: string;
   /** Max retries before degrading (bypass session init on next request). */
   maxRetries: number;
   /**
@@ -831,6 +833,7 @@ export interface RawYamlConfig {
   };
   sessionInit?: {
     enabled?: boolean;
+    webPublicBaseUrl?: string;
     maxRetries?: number;
     injectAgentContext?: boolean;
     injectTaskContext?: boolean;

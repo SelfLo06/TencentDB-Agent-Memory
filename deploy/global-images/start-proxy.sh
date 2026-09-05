@@ -22,6 +22,13 @@ require_vars \
   PROXY_UPSTREAM_URL PROXY_UPSTREAM_API_KEY PROXY_UPSTREAM_MODEL
 
 EXTERNAL_GATEWAY_YAML=""
+SESSION_INIT_PUBLIC_BASE_YAML=""
+if [[ -n "${PROXY_SESSION_INIT_PUBLIC_BASE_URL:-}" ]]; then
+  if [[ ! "$PROXY_SESSION_INIT_PUBLIC_BASE_URL" =~ ^https?://(\[[0-9a-fA-F:]+\]|[a-zA-Z0-9][a-zA-Z0-9._-]*)(:[0-9]{1,5})?(/[a-zA-Z0-9._~%/+:-]*)?$ ]]; then
+    die "PROXY_SESSION_INIT_PUBLIC_BASE_URL 必须是无凭据、查询串、片段或空白的 HTTP(S) 基础地址。"
+  fi
+  SESSION_INIT_PUBLIC_BASE_YAML="  webPublicBaseUrl: '${PROXY_SESSION_INIT_PUBLIC_BASE_URL}'"
+fi
 if [[ -n "${PROXY_EXTERNAL_GATEWAY_URL:-}" ]]; then
   if [[ ! "$PROXY_EXTERNAL_GATEWAY_URL" =~ ^https?://(\[[0-9a-fA-F:]+\]|[a-zA-Z0-9][a-zA-Z0-9._-]*)(:[0-9]{1,5})?(/[a-zA-Z0-9._~%/+:-]*)?$ ]]; then
     die "PROXY_EXTERNAL_GATEWAY_URL 必须是 HTTP(S) 基础地址，不含凭据、查询串、片段、空白或 Shell 特殊字符。"
@@ -122,6 +129,7 @@ auth:
 
 sessionInit:
   enabled: $(bool $PROXY_ENABLE_SESSION_INIT)
+${SESSION_INIT_PUBLIC_BASE_YAML}
   maxRetries: 3
   injectAgentContext: true
   injectTaskContext: true
