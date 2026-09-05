@@ -80,15 +80,31 @@ export function sanitizeApiPayload(value: unknown, maxFieldChars: number, depth 
   return out;
 }
 
-export function sanitizeApiErrorMessage(error: unknown): string {
-  let message = error instanceof Error ? error.message : String(error);
-  if (typeof error !== "object" || error === null) return message;
+const SAFE_ERROR_NAMES = new Set([
+  "Error", "TypeError", "RangeError", "SyntaxError", "ReferenceError", "URIError",
+  "EvalError", "AggregateError", "MetadataError", "DuplicateUserKeyError",
+]);
+const SAFE_ERROR_CODES = new Set<unknown>([
+  "permission_denied", "invalid_credentials", "invalid_password", "missing_instance_id",
+  "invalid_instance_id", "missing_team_id", "duplicate_entry", "duplicate_user_key",
+  "already_initialized", "user_inactive", "user_key_not_found", "agent_team_mismatch",
+  "task_agent_not_linked", "key_limit_exceeded", "user_limit_exceeded", "team_limit_exceeded",
+  "last_key_cannot_revoke", "last_system_admin", "member_already_exists", "asset_not_bindable",
+  "filter_not_allowed", "invalid_user_ids", 11000,
+]);
 
-  for (const [key, raw] of Object.entries(error)) {
-    if (!isApiTraceSensitiveKey(key) || typeof raw !== "string" || raw.length === 0) continue;
-    message = message.split(raw).join(sanitizeSensitiveApiValue(key, raw));
+/** 默认拒绝原始 message/stack/cause；业务错误也可能插入用户输入，不能按类型直接放行。 */
+export function summarizeApiError(error: unknown): string {
+  try {
+    if (!(error instanceof Error)) return "UnknownError: [redacted]";
+    const rawName = error.name;
+    const name = SAFE_ERROR_NAMES.has(rawName) ? rawName : "Error";
+    const code = (error as Error & { code?: unknown }).code;
+    return `${name}${SAFE_ERROR_CODES.has(code) ? ` code=${code}` : ""}: [redacted]`;
+  } catch {
+    // 异常对象的属性 getter 也不可信，不让日志处理本身改变业务异常传播。
+    return "UnknownError: [redacted]";
   }
-  return message;
 }
 
 export function serializeForApiLog(value: unknown, maxFieldChars: number, maxJsonChars: number): string {

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { MetadataService } from "../metadata/service/metadata-service.js";
+import { MetadataError, MetadataService } from "../metadata/service/metadata-service.js";
 import {
   DuplicateUserKeyError,
   type IMetadataStore,
@@ -12,7 +12,7 @@ import {
 import { handleV3MetaRoute, V3_PREFIX } from "../metadata/router/v3-meta-router.js";
 import { initApiTraceConfig, resetApiTraceConfigForTests } from "./api-log-config.js";
 import { runWithApiRequestContext } from "./api-request-context.js";
-import { isApiTraceSensitiveKey, sanitizeApiPayload } from "./api-sanitize.js";
+import { isApiTraceSensitiveKey, sanitizeApiPayload, summarizeApiError } from "./api-sanitize.js";
 import { setStdoutWriterForTests } from "./api-trace-stdout.js";
 import { wrapApiServiceForTrace, wrapApiStoreForTrace } from "./api-traced-proxy.js";
 
@@ -35,6 +35,68 @@ describe("API trace credential redaction", () => {
   afterEach(() => {
     setStdoutWriterForTests(null);
     resetApiTraceConfigForTests();
+  });
+
+  it.each(["Authorization=Bearer sk-secret", "api_key=secret-value", "password=secret-value"])("仅存在于未知异常 message 的凭据不进入 service/store 日志：%s", async (message) => {
+    const error = new Error(message);
+    const store = wrapApiStoreForTrace({ async createUser() { throw error; } } as unknown as IMetadataStore);
+    const service = wrapApiServiceForTrace({ async initAdminUser() { return store.createUser({} as never); } } as unknown as MetadataService);
+    await expect(runWithApiRequestContext(requestContext, () => service.initAdminUser({ username: "safe-user" } as never))).rejects.toBe(error);
+    const output = lines.join("");
+    expect(output).not.toContain(message);
+    expect(output).not.toContain("sk-secret");
+    expect(output).not.toContain("secret-value");
+    for (const context of ["req-api-trace-redaction", "api.store.error", "api.service.error", "source_file", "source_op", "duration_ms", "Error"]) expect(output).toContain(context);
+  });
+
+  it.each([false, true])("公开/内部 router 默认隐藏未知 message，同时保持响应 contract：internal=%s", async (internal) => {
+    for (const message of ["Authorization=Bearer sk-secret", "api_key=secret-value", "password=secret-value"]) {
+      const service = {
+        async verifyAuthForCaller() { throw new Error(message); },
+        async initAdminUser() { throw new Error(message); },
+      } as unknown as MetadataService;
+      const loggerErrors: string[] = [];
+      const responses: Array<{ status: number; body: unknown }> = [];
+      const route = internal ? `${V3_INTERNAL_PREFIX}/user/init-admin` : `${V3_PREFIX}/auth/verify`;
+      await (internal ? handleInternalMetaRoute : handleV3MetaRoute)(
+        { headers: { "x-request-id": "req-message-only", "x-tdai-service-id": "instance-router" } } as unknown as IncomingMessage,
+        {} as ServerResponse, route, "POST",
+        async <T>() => ({ username: "safe-user", user_key: "sk-mem-request-body-secret" }) as T,
+        (_res, status, body) => responses.push({ status, body }),
+        { getMetadataService: () => service, logger: { info() {}, warn() {}, error(text) { loggerErrors.push(text); } } },
+      );
+      const output = [...lines, ...loggerErrors].join("");
+      expect(output).not.toContain(message);
+      expect(output).not.toContain("sk-secret");
+      expect(output).not.toContain("secret-value");
+      expect(output).toContain("req-message-only");
+      expect(output).toContain("api.http.error");
+      expect(responses).toEqual([{ status: 500, body: expect.objectContaining({ code: 500, message: "internal_error", request_id: "req-message-only" }) }]);
+    }
+  });
+
+  it("不把任意 error name/code 当作安全上下文，业务响应仍保留原内容", async () => {
+    const error = Object.assign(new Error("hidden-message"), { name: "Bearer name-secret", code: "api-key-secret" });
+    expect(summarizeApiError(error)).not.toMatch(/hidden-message|name-secret|api-key-secret/);
+    expect(summarizeApiError("password=primitive-secret")).not.toContain("primitive-secret");
+    expect(summarizeApiError(new TypeError("hidden-message"))).toContain("TypeError");
+    expect(summarizeApiError(Object.assign(new Error("hidden-message"), { code: 11000 }))).toContain("code=11000");
+    const hostile = new Error("hidden-message", { cause: new Error("cause-secret") });
+    Object.defineProperty(hostile, "name", { get() { throw new Error("getter-secret"); } });
+    expect(summarizeApiError(hostile)).toBe("UnknownError: [redacted]");
+    const responses: Array<{ status: number; body: unknown }> = [];
+    const loggerWarnings: string[] = [];
+    await handleV3MetaRoute(
+      { headers: { "x-request-id": "req-business-error", "x-tdai-service-id": "instance-router" } } as unknown as IncomingMessage,
+      {} as ServerResponse, `${V3_PREFIX}/auth/verify`, "POST",
+      async <T>() => ({ user_key: "sk-mem-request-body-secret" }) as T,
+      (_res, status, body) => responses.push({ status, body }),
+      { getMetadataService: () => ({ async verifyAuthForCaller() { throw new MetadataError("permission_denied", "private-business-message"); } }) as unknown as MetadataService,
+        logger: { info() {}, error() {}, warn(text) { loggerWarnings.push(text); } } },
+    );
+    expect(responses).toEqual([{ status: 403, body: expect.objectContaining({ code: 403, message: "permission_denied: private-business-message" }) }]);
+    expect([...lines, ...loggerWarnings].join("")).not.toContain("private-business-message");
+    expect([...lines, ...loggerWarnings].join("")).toContain("permission_denied");
   });
 
   it("redacts snake_case, camelCase, and nested sensitive fields while preserving metadata", () => {

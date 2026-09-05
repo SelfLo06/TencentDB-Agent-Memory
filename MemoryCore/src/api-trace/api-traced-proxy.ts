@@ -7,7 +7,7 @@ import { getApiRequestContext } from "./api-request-context.js";
 import { getApiTraceConfig, isApiTraceActive } from "./api-log-config.js";
 import { logApiTrace } from "./api-trace-logger.js";
 import {
-  sanitizeApiErrorMessage,
+  summarizeApiError,
   sanitizeApiField,
   sanitizeApiPayload,
 } from "./api-sanitize.js";
@@ -107,7 +107,7 @@ function wrapAsyncMethod(
     };
 
     const onError = (err: unknown) => {
-      const message = sanitizeApiErrorMessage(err);
+      const message = summarizeApiError(err);
       logApiTrace(
         "error",
         `${eventPrefix}.error`,
@@ -119,7 +119,6 @@ function wrapAsyncMethod(
           error_message: message,
           ...summarizeArgs(op, args, maxField),
         },
-        { err: err instanceof Error ? err : undefined },
       );
       throw err;
     };

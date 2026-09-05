@@ -26,7 +26,7 @@ import {
 import {
   getApiTraceConfig,
   runWithApiRequestContext,
-  sanitizeApiErrorMessage,
+  summarizeApiError,
 } from "../../api-trace/index.js";
 
 export const V3_INTERNAL_PREFIX = "/v3/internal/meta";
@@ -178,8 +178,8 @@ export async function handleInternalMetaRoute(
       sendJson(res, code, errorEnvelope(code, message, requestId));
       return true;
     }
-    const msg = sanitizeApiErrorMessage(err);
-    deps.logger.error?.(`${TAG} unexpected: ${msg}`);
+    const msg = summarizeApiError(err);
+    deps.logger.error?.(`${TAG} unexpected: ${msg} requestId=${requestId} route=${pathname}`);
     logMetaApiError(traceCtx, err, { envelopeCode: 500, httpStatus: 500 });
     sendJson(res, 500, errorEnvelope(500, "internal_error", requestId));
     return true;

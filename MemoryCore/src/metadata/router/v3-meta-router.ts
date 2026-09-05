@@ -41,7 +41,7 @@ import {
 import {
   getApiTraceConfig,
   runWithApiRequestContext,
-  sanitizeApiErrorMessage,
+  summarizeApiError,
 } from "../../api-trace/index.js";
 import { requireEntity, EntityType } from "./entity-ref-validator.js";
 
@@ -380,7 +380,7 @@ export async function handleV3MetaRoute(
     if (err instanceof MetadataError) {
       const code = mapErrorCode(err.code);
       const message = `${err.code}: ${err.message}`;
-      const logMessage = `${err.code}: ${sanitizeApiErrorMessage(err)}`;
+      const logMessage = summarizeApiError(err);
       logMetaApiRejected(traceCtx, { httpStatus: code, envelopeCode: code, message: logMessage });
       sendJson(res, code, errorEnvelope(code, message, requestId));
       return true;
@@ -450,13 +450,13 @@ export async function handleV3MetaRoute(
     if (err instanceof MetadataError) {
       const code = mapErrorCode(err.code);
       const message = `${err.code}: ${err.message}`;
-      const logMessage = `${err.code}: ${sanitizeApiErrorMessage(err)}`;
-      deps.logger.warn?.(`${TAG} [${pathname}] ${logMessage}`);
+      const logMessage = summarizeApiError(err);
+      deps.logger.warn?.(`${TAG} [${pathname}] ${logMessage} requestId=${requestId}`);
       logMetaApiError(traceCtx, err, { envelopeCode: code, httpStatus: code });
       sendJson(res, code, errorEnvelope(code, message, requestId));
     } else {
-      const msg = sanitizeApiErrorMessage(err);
-      deps.logger.error?.(`${TAG} [${pathname}] unexpected: ${msg}`);
+      const msg = summarizeApiError(err);
+      deps.logger.error?.(`${TAG} [${pathname}] unexpected: ${msg} requestId=${requestId}`);
       logMetaApiError(traceCtx, err, { envelopeCode: 500, httpStatus: 500 });
       sendJson(res, 500, errorEnvelope(500, "internal_error", requestId));
     }
