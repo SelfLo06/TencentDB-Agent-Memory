@@ -23,6 +23,34 @@ const requestContext = {
   internal: true,
 };
 
+const secretMessages = ["Authorization=Bearer sk-secret", "api_key=secret-value", "password=secret-value"];
+
+async function requestFailingMetadataRoute(
+  service: MetadataService,
+  requestId: string,
+  internal = false,
+  body: Record<string, string> = { user_key: "sk-mem-request-body-secret" },
+) {
+  const loggerLines: string[] = [];
+  const responses: Array<{ status: number; body: unknown }> = [];
+  const route = internal ? `${V3_INTERNAL_PREFIX}/user/init-admin` : `${V3_PREFIX}/auth/verify`;
+  const handled = await (internal ? handleInternalMetaRoute : handleV3MetaRoute)(
+    { headers: { "x-request-id": requestId, "x-tdai-service-id": "instance-router" } } as unknown as IncomingMessage,
+    {} as ServerResponse, route, "POST",
+    async <T>() => body as T,
+    (_res, status, responseBody) => responses.push({ status, body: responseBody }),
+    {
+      getMetadataService: () => service,
+      logger: {
+        info() {},
+        warn(message) { loggerLines.push(message); },
+        error(message) { loggerLines.push(message); },
+      },
+    },
+  );
+  return { handled, responses, loggerLines };
+}
+
 describe("API trace credential redaction", () => {
   const lines: string[] = [];
 
@@ -37,7 +65,7 @@ describe("API trace credential redaction", () => {
     resetApiTraceConfigForTests();
   });
 
-  it.each(["Authorization=Bearer sk-secret", "api_key=secret-value", "password=secret-value"])("仅存在于未知异常 message 的凭据不进入 service/store 日志：%s", async (message) => {
+  it.each(secretMessages)("仅存在于未知异常 message 的凭据不进入 service/store 日志：%s", async (message) => {
     const error = new Error(message);
     const store = wrapApiStoreForTrace({ async createUser() { throw error; } } as unknown as IMetadataStore);
     const service = wrapApiServiceForTrace({ async initAdminUser() { return store.createUser({} as never); } } as unknown as MetadataService);
@@ -49,31 +77,25 @@ describe("API trace credential redaction", () => {
     for (const context of ["req-api-trace-redaction", "api.store.error", "api.service.error", "source_file", "source_op", "duration_ms", "Error"]) expect(output).toContain(context);
   });
 
-  it.each([false, true])("公开/内部 router 默认隐藏未知 message，同时保持响应 contract：internal=%s", async (internal) => {
-    for (const message of ["Authorization=Bearer sk-secret", "api_key=secret-value", "password=secret-value"]) {
+  it.each([false, true].flatMap((internal) => secretMessages.map((message) => ({ internal, message }))))(
+    "router 隐藏未知 message 且保持响应 contract：internal=$internal, message=$message", async ({ internal, message }) => {
       const service = {
         async verifyAuthForCaller() { throw new Error(message); },
         async initAdminUser() { throw new Error(message); },
       } as unknown as MetadataService;
-      const loggerErrors: string[] = [];
-      const responses: Array<{ status: number; body: unknown }> = [];
-      const route = internal ? `${V3_INTERNAL_PREFIX}/user/init-admin` : `${V3_PREFIX}/auth/verify`;
-      await (internal ? handleInternalMetaRoute : handleV3MetaRoute)(
-        { headers: { "x-request-id": "req-message-only", "x-tdai-service-id": "instance-router" } } as unknown as IncomingMessage,
-        {} as ServerResponse, route, "POST",
-        async <T>() => ({ username: "safe-user", user_key: "sk-mem-request-body-secret" }) as T,
-        (_res, status, body) => responses.push({ status, body }),
-        { getMetadataService: () => service, logger: { info() {}, warn() {}, error(text) { loggerErrors.push(text); } } },
+      const { responses, loggerLines } = await requestFailingMetadataRoute(
+        service, "req-message-only", internal,
+        { username: "safe-user", user_key: "sk-mem-request-body-secret" },
       );
-      const output = [...lines, ...loggerErrors].join("");
+      const output = [...lines, ...loggerLines].join("");
       expect(output).not.toContain(message);
       expect(output).not.toContain("sk-secret");
       expect(output).not.toContain("secret-value");
       expect(output).toContain("req-message-only");
       expect(output).toContain("api.http.error");
       expect(responses).toEqual([{ status: 500, body: expect.objectContaining({ code: 500, message: "internal_error", request_id: "req-message-only" }) }]);
-    }
-  });
+    },
+  );
 
   it("不把任意 error name/code 当作安全上下文，业务响应仍保留原内容", async () => {
     const error = Object.assign(new Error("hidden-message"), { name: "Bearer name-secret", code: "api-key-secret" });
@@ -84,19 +106,13 @@ describe("API trace credential redaction", () => {
     const hostile = new Error("hidden-message", { cause: new Error("cause-secret") });
     Object.defineProperty(hostile, "name", { get() { throw new Error("getter-secret"); } });
     expect(summarizeApiError(hostile)).toBe("UnknownError: [redacted]");
-    const responses: Array<{ status: number; body: unknown }> = [];
-    const loggerWarnings: string[] = [];
-    await handleV3MetaRoute(
-      { headers: { "x-request-id": "req-business-error", "x-tdai-service-id": "instance-router" } } as unknown as IncomingMessage,
-      {} as ServerResponse, `${V3_PREFIX}/auth/verify`, "POST",
-      async <T>() => ({ user_key: "sk-mem-request-body-secret" }) as T,
-      (_res, status, body) => responses.push({ status, body }),
-      { getMetadataService: () => ({ async verifyAuthForCaller() { throw new MetadataError("permission_denied", "private-business-message"); } }) as unknown as MetadataService,
-        logger: { info() {}, error() {}, warn(text) { loggerWarnings.push(text); } } },
+    const { responses, loggerLines } = await requestFailingMetadataRoute(
+      { async verifyAuthForCaller() { throw new MetadataError("permission_denied", "private-business-message"); } } as unknown as MetadataService,
+      "req-business-error",
     );
     expect(responses).toEqual([{ status: 403, body: expect.objectContaining({ code: 403, message: "permission_denied: private-business-message" }) }]);
-    expect([...lines, ...loggerWarnings].join("")).not.toContain("private-business-message");
-    expect([...lines, ...loggerWarnings].join("")).toContain("permission_denied");
+    expect([...lines, ...loggerLines].join("")).not.toContain("private-business-message");
+    expect([...lines, ...loggerLines].join("")).toContain("permission_denied");
   });
 
   it("redacts snake_case, camelCase, and nested sensitive fields while preserving metadata", () => {
@@ -285,35 +301,12 @@ describe("API trace credential redaction", () => {
     const service = wrapApiServiceForTrace(
       new MetadataService(wrapApiStoreForTrace(store), "instance-router"),
     );
-    const loggerErrors: string[] = [];
-    const responses: Array<{ status: number; body: unknown }> = [];
-    const body = { username: "admin-visible", user_key: userKey };
-
-    const handled = await handleInternalMetaRoute(
-      {
-        headers: {
-          "x-request-id": "req-init-admin-duplicate",
-          "x-tdai-service-id": "instance-router",
-        },
-      } as unknown as IncomingMessage,
-      {} as ServerResponse,
-      `${V3_INTERNAL_PREFIX}/user/init-admin`,
-      "POST",
-      async <T>() => body as T,
-      (_res, status, responseBody) => responses.push({ status, body: responseBody }),
-      {
-        getMetadataService: () => service,
-        logger: {
-          info() {},
-          warn() {},
-          error(message) {
-            loggerErrors.push(message);
-          },
-        },
-      },
+    const { handled, responses, loggerLines } = await requestFailingMetadataRoute(
+      service, "req-init-admin-duplicate", true,
+      { username: "admin-visible", user_key: userKey },
     );
 
-    const output = [...lines, ...loggerErrors].join("");
+    const output = [...lines, ...loggerLines].join("");
     expect(handled).toBe(true);
     expect(responses).toHaveLength(1);
     expect(responses[0]?.status).toBe(500);
@@ -340,33 +333,11 @@ describe("API trace credential redaction", () => {
         throw error;
       },
     } as unknown as MetadataService;
-    const loggerErrors: string[] = [];
-
-    await handleV3MetaRoute(
-      {
-        headers: {
-          "x-request-id": "req-public-router-error",
-          "x-tdai-service-id": "instance-router",
-        },
-      } as unknown as IncomingMessage,
-      {} as ServerResponse,
-      `${V3_PREFIX}/auth/verify`,
-      "POST",
-      async <T>() => ({ user_key: "sk-mem-request-body-secret" }) as T,
-      () => {},
-      {
-        getMetadataService: () => service,
-        logger: {
-          info() {},
-          warn() {},
-          error(message) {
-            loggerErrors.push(message);
-          },
-        },
-      },
+    const { loggerLines } = await requestFailingMetadataRoute(
+      service, "req-public-router-error",
     );
 
-    const output = [...lines, ...loggerErrors].join("");
+    const output = [...lines, ...loggerLines].join("");
     expect(output).not.toContain(clientSecret);
     expect(output).not.toContain(password);
     expect(output).toContain("[redacted]");

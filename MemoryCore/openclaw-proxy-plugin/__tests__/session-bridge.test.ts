@@ -1,14 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
-import type { OpenClawPluginApi, ProviderWrapStreamFnContext } from "openclaw/plugin-sdk/core";
+import type { ProviderWrapStreamFnContext } from "openclaw/plugin-sdk/core";
 import register, { withOpenClawConversationId, wrapMemoryProxyStream } from "../index.js";
 
 const SESSION_A_HEADER = "openclaw-fa57a52dbf08190218529730a3e99db6946c6c29220fb6e0551e21598b0b05db";
 
 describe("MemoryProxy OpenClaw session bridge", () => {
-  it("maps the same sessionId to the same conversation header", () => {
-    const first = withOpenClawConversationId({ sessionId: "session-a" });
-    const second = withOpenClawConversationId({ sessionId: "session-a" });
+  it.each(["session-a", "  session-a  "])("同一会话稳定映射到已知 SHA-256 值，忽略两端空白：%s", (sessionId) => {
+    const first = withOpenClawConversationId({ sessionId });
+    const second = withOpenClawConversationId({ sessionId });
 
     expect(first?.headers?.["x-conversation-id"]).toBe(SESSION_A_HEADER);
     expect(second?.headers?.["x-conversation-id"]).toBe(SESSION_A_HEADER);
@@ -22,12 +22,6 @@ describe("MemoryProxy OpenClaw session bridge", () => {
       second?.headers?.["x-conversation-id"],
     );
     expect(second?.headers?.["x-conversation-id"]).toBe("openclaw-e8de016fbd70182f6d2325e81df82550f3f46aaed8e784533131489144d4856d");
-  });
-
-  it("normalizes surrounding whitespace before building the conversation header", () => {
-    const result = withOpenClawConversationId({ sessionId: "  session-a  " });
-
-    expect(result?.headers?.["x-conversation-id"]).toBe(SESSION_A_HEADER);
   });
 
   it("preserves non-conversation headers and replaces existing conversation casing", () => {

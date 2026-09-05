@@ -18,6 +18,8 @@ import { __resetSessionStoreForTests, getSessionStore, SessionStore } from "../s
 import {
   setWebSessionInitService,
   WebSessionInitService,
+  type WebInitChallengeInput,
+  type WebSessionInitServiceOptions,
 } from "../web-init.js";
 
 class MemoryBindingRepo implements BindingRepo {
@@ -115,7 +117,7 @@ function deferred<T>() {
 function issueChallenge(
   service: WebSessionInitService,
   store: SessionStore,
-  metadataClient: typeof metadata = metadata,
+  metadataClient: WebInitChallengeInput["metadataClient"] = metadata,
   sessionKey = "conversation-a",
   agentSource = "openclaw",
 ): string {
@@ -124,7 +126,7 @@ function issueChallenge(
     sessionKey,
     identity: { userId: "user-a", agentSource, sessionId: sessionKey, spaceId: "space-a" },
     userKey: "secret-user-key",
-    metadataClient: metadataClient as any,
+    metadataClient,
     store,
   });
   if (!issued.ok) throw new Error(`Unable to issue challenge: ${issued.code}`);
@@ -458,12 +460,27 @@ describe("Web Session Init routes and client integration", () => {
     vi.unstubAllGlobals();
   });
 
-  async function pageRuntime() {
-    const service = new WebSessionInitService({ tokenFactory: () => "ui-token" });
-    const token = issueChallenge(service, getSessionStore());
+  function routeChallenge(
+    metadataClient: WebInitChallengeInput["metadataClient"] = metadata,
+    options: WebSessionInitServiceOptions = {},
+  ) {
+    const service = new WebSessionInitService({ tokenFactory: () => "route-token", ...options });
+    const token = issueChallenge(service, getSessionStore(), metadataClient);
     setWebSessionInitService(service);
     const app = createApp(config());
     const pathname = `/session-init/${token}`;
+    return {
+      service, token, app, pathname,
+      complete(body = JSON.stringify({ teamId: "team-a", agentId: "agent-a" })) {
+        return app.request(`http://localhost${pathname}/complete`, {
+          method: "POST", headers: { "content-type": "application/json" }, body,
+        });
+      },
+    };
+  }
+
+  async function pageRuntime() {
+    const { app, pathname } = routeChallenge(metadata, { tokenFactory: () => "ui-token" });
     const html = await (await app.request(`http://localhost${pathname}`)).text();
     const elements = Object.fromEntries([
       "team", "agent", "task", "form", "connect", "status", "status-title", "status-detail", "retry",
@@ -949,17 +966,9 @@ describe("Web Session Init routes and client integration", () => {
     ["array", JSON.stringify([])],
     ["number", JSON.stringify(123)],
   ])("rejects JSON primitive %s as invalid_selection without a 500", async (_name, body) => {
-    const service = new WebSessionInitService({ tokenFactory: () => "primitive-json-token" });
-    const token = issueChallenge(service, getSessionStore(), metadata, "primitive-json");
-    const complete = vi.spyOn(service, "complete");
-    setWebSessionInitService(service);
-    const app = createApp(config());
-
-    const response = await app.request(`http://localhost/session-init/${token}/complete`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body,
-    });
+    const route = routeChallenge();
+    const complete = vi.spyOn(route.service, "complete");
+    const response = await route.complete(body);
 
     expect(response.status).toBe(400);
     expect(response.headers.get("cache-control")).toBe("no-store");
@@ -974,56 +983,44 @@ describe("Web Session Init routes and client integration", () => {
     const responseSecret = "kernel-response-secret";
     const errorBody = JSON.stringify({ error: responseSecret, user_key: userKey });
     const logs: string[] = [];
-    const spies = (["log", "warn", "error"] as const).map((method) =>
+    for (const method of ["log", "warn", "error"] as const) {
       vi.spyOn(console, method).mockImplementation((...args: unknown[]) => {
         logs.push(args.map(String).join(" "));
-      }),
-    );
-
-    try {
-      const client = new MetadataClient(
-        { endpoint: "http://kernel.test", serviceToken, timeoutMs: 1_500 },
-        "space-a",
-        userKey,
-        vi.fn(async () => new Response(
-          errorBody,
-          { status, headers: { "content-type": "application/json" } },
-        )),
-      );
-      const service = new WebSessionInitService({ tokenFactory: () => `metadata-http-${status}` });
-      const token = issueChallenge(service, getSessionStore(), client as any, `metadata-http-${status}`);
-      setWebSessionInitService(service);
-      const app = createApp(config());
-
-      const response = status === 401
-        ? await app.request(`http://localhost/session-init/${token}/options`)
-        : await app.request(`http://localhost/session-init/${token}/complete`, {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ teamId: "team-a", agentId: "agent-a" }),
-          });
-      const responseText = await response.text();
-      const captured = logs.join("\n");
-
-      expect(response.status).toBe(502);
-      expect(response.headers.get("cache-control")).toBe("no-store");
-      expect(responseText).not.toContain(userKey);
-      expect(responseText).not.toContain(responseSecret);
-      expect(responseText).toContain("metadata_unavailable");
-      expect(captured).not.toContain(userKey);
-      expect(captured).not.toContain("sk-short");
-      expect(captured).not.toContain(serviceToken);
-      expect(captured).not.toContain(responseSecret);
-      expect(captured).not.toContain("userKey.prefix");
-      expect(captured).not.toContain("body.head");
-      expect(captured).toContain("path=/v3/meta/team/list");
-      expect(captured).toContain(`status=${status}`);
-      expect(captured).toContain(`userKey.len=${userKey.length}`);
-      expect(captured).toContain(`serviceToken.len=${serviceToken.length}`);
-      expect(captured).toContain(`body.len=${errorBody.length}`);
-    } finally {
-      for (const spy of spies) spy.mockRestore();
+      });
     }
+
+    const client = new MetadataClient(
+      { endpoint: "http://kernel.test", serviceToken, timeoutMs: 1_500 },
+      "space-a",
+      userKey,
+      vi.fn(async () => new Response(
+        errorBody,
+        { status, headers: { "content-type": "application/json" } },
+      )),
+    );
+    const route = routeChallenge(client);
+    const response = status === 401
+      ? await route.app.request(`http://localhost${route.pathname}/options`)
+      : await route.complete();
+    const responseText = await response.text();
+    const captured = logs.join("\n");
+
+    expect(response.status).toBe(502);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(responseText).not.toContain(userKey);
+    expect(responseText).not.toContain(responseSecret);
+    expect(responseText).toContain("metadata_unavailable");
+    expect(captured).not.toContain(userKey);
+    expect(captured).not.toContain("sk-short");
+    expect(captured).not.toContain(serviceToken);
+    expect(captured).not.toContain(responseSecret);
+    expect(captured).not.toContain("userKey.prefix");
+    expect(captured).not.toContain("body.head");
+    expect(captured).toContain("path=/v3/meta/team/list");
+    expect(captured).toContain(`status=${status}`);
+    expect(captured).toContain(`userKey.len=${userKey.length}`);
+    expect(captured).toContain(`serviceToken.len=${serviceToken.length}`);
+    expect(captured).toContain(`body.len=${errorBody.length}`);
   });
 
   it.each(["envelope", "network"])("does not expose %s exceptions through either Web Init API", async (failure) => {
@@ -1042,7 +1039,7 @@ describe("Web Session Init routes and client integration", () => {
     const token = issueChallenge(service, getSessionStore(), {
       ...metadata,
       listTeams: (userId: string) => fail ? client.listTeams(userId) : metadata.listTeams(userId),
-    } as any);
+    });
     setWebSessionInitService(service);
     const app = createApp(config());
     const baseUrl = `http://localhost/session-init/${token}`;
@@ -1185,113 +1182,55 @@ describe("Web Session Init routes and client integration", () => {
     }
   });
 
-  it("sets no-store on complete success and all complete error responses", async () => {
-    const app = createApp(config());
-    const post = (token: string, body: string) => app.request(
-      `http://localhost/session-init/${token}/complete`,
-      { method: "POST", headers: { "content-type": "application/json" }, body },
-    );
-    const selection = JSON.stringify({ teamId: "team-a", agentId: "agent-a" });
-
-    const successService = new WebSessionInitService({ tokenFactory: () => "complete-success" });
-    const successToken = issueChallenge(successService, getSessionStore(), metadata, "complete-success");
-    setWebSessionInitService(successService);
-    const success = await post(successToken, selection);
-
-    const invalid = await post("missing-token", selection);
-
+  it.each([
+    { outcome: "success", status: 200 },
+    { outcome: "invalid_token", status: 404 },
+    { outcome: "expired_token", status: 410 },
+    { outcome: "invalid_json", status: 400, body: "{" },
+    { outcome: "invalid_team", status: 400, body: JSON.stringify({ teamId: "team-missing", agentId: "agent-a" }) },
+    { outcome: "invalid_agent", status: 400, body: JSON.stringify({ teamId: "team-a", agentId: "agent-missing" }) },
+    { outcome: "invalid_task", status: 400, body: JSON.stringify({ teamId: "team-a", agentId: "agent-a", taskId: "task-missing" }) },
+    { outcome: "metadata_unavailable", status: 502 },
+  ])("complete 的 $outcome 响应保持 HTTP $status 和 no-store", async ({ outcome, status, body }) => {
     let now = 100;
-    const expiredService = new WebSessionInitService({
-      ttlMs: 50,
-      now: () => now,
-      tokenFactory: () => "complete-expired",
-    });
-    const expiredToken = issueChallenge(expiredService, getSessionStore(), metadata, "complete-expired");
-    setWebSessionInitService(expiredService);
-    now = 151;
-    const expired = await post(expiredToken, selection);
-
-    const invalidJsonService = new WebSessionInitService({ tokenFactory: () => "complete-invalid-json" });
-    const invalidJsonToken = issueChallenge(invalidJsonService, getSessionStore(), metadata, "complete-invalid-json");
-    setWebSessionInitService(invalidJsonService);
-    const invalidJson = await post(invalidJsonToken, "{");
-
-    // 每种非法选择使用独立 token/session，避免前一个失败场景的 completing 状态或
-    // SessionStore 内容影响后一个场景，同时验证 Team/Agent/Task 都映射到 HTTP 400。
-    const postInvalidSelection = async (
-      token: string,
-      selectionBody: Record<string, string>,
-    ) => {
-      const service = new WebSessionInitService({ tokenFactory: () => token });
-      issueChallenge(service, getSessionStore(), metadata, token);
-      setWebSessionInitService(service);
-      return post(token, JSON.stringify(selectionBody));
-    };
-    const invalidTeam = await postInvalidSelection("complete-invalid-team", {
-      teamId: "team-missing",
-      agentId: "agent-a",
-    });
-    const invalidAgent = await postInvalidSelection("complete-invalid-agent", {
-      teamId: "team-a",
-      agentId: "agent-missing",
-    });
-    const invalidTask = await postInvalidSelection("complete-invalid-task", {
-      teamId: "team-a",
-      agentId: "agent-a",
-      taskId: "task-missing",
-    });
-
-    const unavailableService = new WebSessionInitService({ tokenFactory: () => "complete-unavailable" });
-    const unavailableToken = issueChallenge(unavailableService, getSessionStore(), {
+    const route = routeChallenge({
       ...metadata,
-      async listTeams() {
-        throw new Error("metadata offline");
+      async listTeams(userId: string) {
+        if (outcome === "metadata_unavailable") throw new Error("metadata offline");
+        return metadata.listTeams(userId);
       },
-    }, "complete-unavailable");
-    setWebSessionInitService(unavailableService);
-    const unavailable = await post(unavailableToken, selection);
+    }, { ttlMs: 50, now: () => now });
+    if (outcome === "invalid_token") route.service.reset();
+    if (outcome === "expired_token") now = 151;
 
+    const response = await route.complete(body);
+    expect(response.status).toBe(status);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(bindingRepo.putCalls).toHaveLength(status === 200 ? 1 : 0);
+  });
+
+  it("并发 complete 返回 409 且两个响应都禁止缓存，首次提交仍可完成", async () => {
     // HTTP 层同样保持两个 POST 并发，不能退化为顺序 duplicate 测试。
     const teams = deferred<Awaited<ReturnType<typeof metadata.listTeams>>>();
     const started = deferred<void>();
-    const conflictService = new WebSessionInitService({ tokenFactory: () => "complete-conflict" });
-    const conflictToken = issueChallenge(conflictService, getSessionStore(), {
+    const route = routeChallenge({
       ...metadata,
       listTeams() {
         started.resolve(undefined);
         return teams.promise;
       },
-    }, "complete-conflict");
-    setWebSessionInitService(conflictService);
-    const firstCompletion = post(conflictToken, selection);
+    });
+    const firstCompletion = route.complete();
     await started.promise;
-    const conflict = await post(conflictToken, selection);
+    const conflict = await route.complete();
     teams.resolve(await metadata.listTeams("user-a"));
     const completedAfterConflict = await firstCompletion;
 
-    expect(success.status).toBe(200);
-    expect(invalid.status).toBe(404);
-    expect(expired.status).toBe(410);
-    expect(invalidJson.status).toBe(400);
-    expect(invalidTeam.status).toBe(400);
-    expect(invalidAgent.status).toBe(400);
-    expect(invalidTask.status).toBe(400);
-    expect(unavailable.status).toBe(502);
     expect(conflict.status).toBe(409);
     expect(await conflict.json()).toMatchObject({ error: "completion_in_progress" });
     expect(completedAfterConflict.status).toBe(200);
-    for (const response of [
-      success,
-      invalid,
-      expired,
-      invalidJson,
-      invalidTeam,
-      invalidAgent,
-      invalidTask,
-      unavailable,
-      conflict,
-      completedAfterConflict,
-    ]) {
+    expect(bindingRepo.putCalls).toHaveLength(1);
+    for (const response of [conflict, completedAfterConflict]) {
       expect(response.headers.get("cache-control")).toBe("no-store");
     }
   });
