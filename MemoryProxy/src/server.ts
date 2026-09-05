@@ -11,8 +11,13 @@ import { createSkillBridgeHandler } from "./skill/skill-bridge.js";
 import { createMemoryBridgeHandler } from "./memory/memory-bridge.js";
 import { createInstanceDestroyHandler } from "./routes/instance-destroy.js";
 import { createRateLimitHandlers } from "./routes/rate-limits.js";
+import {
+  handleWebSessionInitComplete,
+  handleWebSessionInitOptions,
+  handleWebSessionInitPage,
+} from "./routes/session-init-web.js";
 import { hasAnalyseMarker, hasCostGuardMarker } from "./routes/whitelist.js";
-import { tryActivateStorage, tryActivateRedis } from "./injection/index.js";
+import { ensureBindingRepoPersistent, tryActivateStorage, tryActivateRedis } from "./injection/index.js";
 import { getEffectiveBackend } from "./storage/factory.js";
 import type { ProxyConfig } from "./types.js";
 
@@ -25,6 +30,11 @@ export function createApp(config: ProxyConfig): Hono {
   // pipeline will still call these later when the first main request lands.
   if (!tryActivateStorage(config)) {
     tryActivateRedis(config);
+  }
+  if (config.sessionInit.enabled) {
+    // Web Session Init 的完成可能发生在首个主请求（装配 injection pipeline）
+    // 之前，所以它写 SessionStore 用的持久化 BindingRepo 必须在进程启动时就绪。
+    ensureBindingRepoPersistent(config);
   }
 
   // `/cost-guard` marker 门控 (P0 前置)：
@@ -120,6 +130,12 @@ export function createApp(config: ProxyConfig): Hono {
     const keyId = apiKeyToKeyId(apiKey);
     return c.text(keyId + "\n");
   });
+
+  // Web Session Init（无表单客户端的通用浏览器补全流程）。
+  // 必须注册在底部 catch-all `POST /*` 之前，否则会被兜住走默认路由。
+  app.get("/session-init/:token", (c) => handleWebSessionInitPage(c));
+  app.get("/session-init/:token/options", (c) => handleWebSessionInitOptions(c));
+  app.post("/session-init/:token/complete", (c) => handleWebSessionInitComplete(c));
 
 // Skill bridge: LLM curls land here, proxy injects auth + identity, forwards to core.
   // MUST be registered before the agent-prefixed `/:agent/v1/*` routes below.
