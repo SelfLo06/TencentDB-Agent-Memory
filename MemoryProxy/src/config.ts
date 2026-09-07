@@ -13,13 +13,14 @@ export function normalizeWebPublicBaseUrl(value: unknown): string | undefined {
   if (typeof value !== "string" || !/^https?:\/\/[^/]/i.test(value) || /[\s\\?#]/u.test(value)) {
     throw invalid();
   }
+  if (value.split("/")[2].endsWith(":")) throw invalid();
   let url: URL;
   try {
     url = new URL(value);
   } catch {
     throw invalid();
   }
-  if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) throw invalid();
+  if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.port === "0") throw invalid();
   return url.href.replace(/\/+$/, "");
 }
 

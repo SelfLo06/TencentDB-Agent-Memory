@@ -52,6 +52,24 @@ esac
 }
 
 describe("部署脚本的主动工具地址配置", () => {
+  it.each(["1", "65535", "00001", "08080"])("两条部署路径接受合法十进制端口 %s", port => {
+    const address = `http://[::1]:${port}`;
+    const generated = generateConfig(address, address);
+    generated.run();
+    const config = buildConfig({ configFile: generated.configPath });
+    expect(config.sessionInit.webPublicBaseUrl).toBe(`http://[::1]:${Number(port)}`);
+    expect(config.injection.externalGatewayUrl).toBe(address);
+  });
+
+  it.each(["0", "00000", "65536", "99999", "-1", "abc", ""])("两条部署路径在 Docker 前拒绝非法端口 %s", port => {
+    const address = `http://proxy.example:${port}`;
+    for (const generated of [generateConfig(address), generateConfig(undefined, address)]) {
+      expect(generated.run).toThrow();
+      expect(() => readFileSync(join(generated.directory, "docker-calls"))).toThrow();
+    }
+    expect(() => normalizeWebPublicBaseUrl(address)).toThrow();
+  });
+
   it.each([null, true, 8096, {}, []])("手写配置的非字符串浏览器地址不静默回退：%s", (value) => {
     expect(() => normalizeWebPublicBaseUrl(value)).toThrow("sessionInit.webPublicBaseUrl");
   });
