@@ -4,6 +4,7 @@ import { Hono } from "hono";
 import { handleChatCompletions } from "./handler.js";
 import { handleAnthropicMessages } from "./anthropicHandler.js";
 import { handleAuxiliaryEndpoint } from "./auxiliaryHandler.js";
+import { handleDirectPassthrough } from "./directHandler.js";
 import { handleCodexEndpoint } from "./codexHandler.js";
 import { handleWorkbuddyEndpoint } from "./workbuddyHandler.js";
 import { apiKeyToKeyId, extractBearerToken } from "./opik.js";
@@ -138,6 +139,12 @@ export function createApp(config: ProxyConfig): Hono {
     const keyId = apiKeyToKeyId(apiKey);
     return c.text(keyId + "\n");
   });
+
+  // ── /direct/* — 纯路由透传通道（必须置于所有业务路由之前） ────────────────
+  // 完全绕开 cost-guard / auth / model alias / thinking sanitize；
+  // 但保留 opik trace/span 上报与 jsonl usage 落表（仅对 Anthropic messages
+  // 与 OpenAI chat/completions 生效）。详见 directHandler.ts 头部注释。
+  app.all("/direct/*", (c) => handleDirectPassthrough(c, config));
 
   // Web Session Init（无表单客户端的通用浏览器补全流程）。
   // 必须注册在底部 catch-all `POST /*` 之前，否则会被兜住走默认路由。

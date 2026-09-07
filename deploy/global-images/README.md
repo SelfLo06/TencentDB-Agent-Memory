@@ -45,6 +45,22 @@ cd TencentDB-Agent-Memory/deploy/global-images
 > 想跳过交互、直接读 `.env` 也可以：手动 `cp .env.example .env` 并填好 LLM 后，
 > 运行 `./start-all.sh` 一路回车确认即可（默认值就是 `.env` 里的值）。
 
+### MongoDB 模式（可选）
+
+默认模式是 **sqlite**（零依赖，数据落容器卷，推荐上手）。想体验 MongoDB 数据面
+（L0/L1/profile/skill 文档 + mongot 原生 BM25 检索，元数据默认同步落 Mongo）：
+
+```bash
+./start-all-mongo.sh    # 与 start-all.sh 流程完全一致，仅强制 mongodb 存储后端
+```
+
+- 未设 `MONGODB_ENDPOINT` 时，脚本会自动起一个本地 `mongodb-atlas-local` 容器
+  （mongod + mongot 一体，数据卷 `mongo-local-*` 持久化，`stop-all.sh --purge` 一并清理）；
+- 想用外部 Mongo（Atlas / 自建带 mongot 的副本集），在 `.env` 填 `MONGODB_ENDPOINT` 即可；
+- `start-all.sh` 保持原逻辑不变；两个入口随时切换。注意两种模式的索引/元数据
+  存储位置不同（sqlite 在 `MEMORY_CORE_VOLUME` 卷，mongo 在 `mongo-local-*` 卷），
+  切换模式不会自动迁移数据；L2/L3 文件两种模式都在 `MEMORY_CORE_VOLUME` 卷。
+
 ### 干跑校验（可选）
 
 `verify.sh` 仍可单独使用，只检查环境不启动容器：
@@ -164,6 +180,17 @@ npm --prefix ../../MemoryProxy test -- src/config/__tests__/deployment.test.ts
 
 OpenClaw 推荐安装 [Session Bridge](../../agents/openclaw/README.md)，使用 Web Init
 选择 Team / Agent 和可选 Task；旧静态 header 预选仍可用。
+
+## 记忆提示词模式（chat / code）
+
+memory-core 通过 `MEMORY_PROMPT_MODE` 切换 L1/L2/L3 pipeline 的提示词族：
+
+| 模式 | `.env` 值 | 抽取内容 | L3 产物 | 适用场景 |
+|---|---|---|---|---|
+| **code**（默认） | `MEMORY_PROMPT_MODE=code` | 项目事实 / 任务 / 决策 / SOP / 禁忌 | Team Operating Doctrine | coding agent、团队协作、工程项目 |
+| chat | `MEMORY_PROMPT_MODE=chat` | persona / episodic / instruction | persona.md（个人画像） | 个人助手、闲聊、教学 |
+
+> **注意**：`code` 模式下纯闲聊可能抽出 0 条记忆（LLM 认为没有可沉淀的工程内容）。如果 L1 一直没产出，先检查 `MEMORY_PROMPT_MODE` 是否与实际对话场景匹配。
 
 ## 内部凭据（生产环境必看）
 
