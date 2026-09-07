@@ -143,6 +143,11 @@ function config(): ProxyConfig {
   return value;
 }
 
+function scopedStore(store: SessionStore, compositeKey: string, userId = "user-a", spaceId = "space-a") {
+  const separator = compositeKey.indexOf(":");
+  return store.forIdentity({ userId, spaceId, agentSource: compositeKey.slice(0, separator), sessionId: compositeKey.slice(separator + 1) });
+}
+
 function chatRequest(
   conversationId: string,
   headers: Record<string, string> = {},
@@ -160,6 +165,28 @@ function chatRequest(
 }
 
 describe("Web Session Init service", () => {
+  it.each([
+    { userId: "user-b", spaceId: "space-a" },
+    { userId: "user-a", spaceId: "space-b" },
+  ])("同 session key 的 $userId/$spaceId challenge 不受其他 identity 完成影响", async other => {
+    const store = new SessionStore(30_000, new MemorySessionRepo(), new MemoryBindingRepo());
+    const service = new WebSessionInitService();
+    const first = issueChallenge(service, store);
+    const identity = { ...other, agentSource: "openclaw", sessionId: "conversation-a" };
+    const input = { compositeKey: "openclaw:conversation-a", sessionKey: "conversation-a", identity, metadataClient: metadata, store };
+    const second = service.issue(input);
+    expect(second.ok).toBe(true);
+    if (!second.ok) throw new Error(second.code);
+    expect(second.value.token).not.toBe(first);
+    expect(await service.complete(first, { teamId: "team-a", agentId: "agent-a", taskId: "task-a" })).toMatchObject({ ok: true });
+    expect(service.issue(input)).toMatchObject({ ok: true, value: { token: second.value.token } });
+    expect(service.inspect(second.value.token)).toMatchObject({ ok: true });
+    expect(await service.getOptions(second.value.token)).toMatchObject({ ok: true });
+    expect(await service.complete(second.value.token, { teamId: "team-b", agentId: "agent-b" })).toMatchObject({ ok: true });
+    expect(store.forIdentity(identity).get(input.compositeKey)?.sessionInfo).toMatchObject({ user_id: other.userId, space_id: other.spaceId, team_id: "team-b", agent_id: "agent-b" });
+    expect(scopedStore(store, input.compositeKey).get(input.compositeKey)?.sessionInfo).toMatchObject({ user_id: "user-a", team_id: "team-a", task_id: "task-a" });
+  });
+
   it("allows Task to be omitted and persists through SessionStore/BindingRepo", async () => {
     const repo = new MemoryBindingRepo();
     const store = new SessionStore(30_000, undefined, repo);
@@ -180,7 +207,7 @@ describe("Web Session Init service", () => {
     });
 
     expect(completed).toEqual({ ok: true, value: null });
-    expect(store.get("openclaw:conversation-a")?.sessionInfo).toMatchObject({
+    expect(scopedStore(store, "openclaw:conversation-a").get("openclaw:conversation-a")?.sessionInfo).toMatchObject({
       session_id: "conversation-a",
       team_id: "team-a",
       agent_id: "agent-a",
@@ -237,7 +264,7 @@ describe("Web Session Init service", () => {
     expect(await service.complete("token-1", { teamId: "team-b", agentId: "agent-b" }))
       .toMatchObject({ ok: false });
     expect(service.issue(input)).toMatchObject({ ok: false, code: "already_initialized" });
-    expect(store.get("openclaw:conversation-a")?.sessionInfo).toMatchObject({
+    expect(scopedStore(store, "openclaw:conversation-a").get("openclaw:conversation-a")?.sessionInfo).toMatchObject({
       team_id: "team-a",
       agent_id: "agent-a",
     });
@@ -278,13 +305,13 @@ describe("Web Session Init service", () => {
     const staleCompletion = service.complete(token, { teamId: "team-a", agentId: "agent-a" });
 
     // 模拟等待窗口内由其他合法路径完成 binding，并通过正式契约同时写入 L1/L2。
-    store.bind("openclaw:conversation-a", {
+    scopedStore(store, "openclaw:conversation-a").bind("openclaw:conversation-a", {
       userId: "user-a",
       agentSource: "openclaw",
       sessionId: "conversation-a",
       spaceId: "space-a",
     });
-    await store.set("openclaw:conversation-a", {
+    await scopedStore(store, "openclaw:conversation-a").set("openclaw:conversation-a", {
       status: "initialized",
       keyId: "conversation-a",
       startedAt: Date.now(),
@@ -308,7 +335,7 @@ describe("Web Session Init service", () => {
     // 返回冲突并保留 team-b；putCalls=1 证明它没有产生第二次覆盖写。
     teams.resolve(await metadata.listTeams("user-a"));
     expect(await staleCompletion).toMatchObject({ ok: false, code: "already_initialized" });
-    expect(store.get("openclaw:conversation-a")?.sessionInfo).toMatchObject({
+    expect(scopedStore(store, "openclaw:conversation-a").get("openclaw:conversation-a")?.sessionInfo).toMatchObject({
       team_id: "team-b",
       agent_id: "agent-b",
     });
@@ -340,7 +367,7 @@ describe("Web Session Init service", () => {
     teams.resolve(await metadata.listTeams("user-a"));
 
     expect(await completion).toMatchObject({ ok: false, code: "expired_token" });
-    expect(store.get("openclaw:conversation-a")).toBeUndefined();
+    expect(scopedStore(store, "openclaw:conversation-a").get("openclaw:conversation-a")).toBeUndefined();
     expect(repo.putCalls).toHaveLength(0);
   });
 
@@ -390,7 +417,7 @@ describe("Web Session Init service", () => {
     const token = issueChallenge(service, store, metadataClient());
 
     expect(await service.complete(token, selection)).toMatchObject({ ok: false, code: expectedCode });
-    expect(store.get("openclaw:conversation-a")).toBeUndefined();
+    expect(scopedStore(store, "openclaw:conversation-a").get("openclaw:conversation-a")).toBeUndefined();
     expect(repo.putCalls).toHaveLength(0);
     expect(service.inspect(token)).toMatchObject({ ok: true });
 
@@ -416,8 +443,8 @@ describe("Web Session Init service", () => {
     expect(await service.complete("isolated-1", { teamId: "team-a", agentId: "agent-a" }))
       .toEqual({ ok: true, value: null });
 
-    expect(store.get("openclaw:conversation-a")?.status).toBe("initialized");
-    expect(store.get("openclaw:conversation-b")).toBeUndefined();
+    expect(scopedStore(store, "openclaw:conversation-a").get("openclaw:conversation-a")?.status).toBe("initialized");
+    expect(scopedStore(store, "openclaw:conversation-b").get("openclaw:conversation-b")).toBeUndefined();
     expect(service.inspect("isolated-2")).toMatchObject({ ok: true });
   });
 });
@@ -738,7 +765,7 @@ describe("Web Session Init routes and client integration", () => {
     expect(setupPrompt).toContain("需要完成记忆会话初始化。");
     expect(setupPrompt).toContain("请打开以下链接，选择团队、Agent 和可选任务：");
     expect(setupPrompt).toContain("连接完成后，请重新发送刚才的请求。");
-    expect(getSessionStore().get(`${agentSource}:conversation-web`)).toBeUndefined();
+    expect(scopedStore(getSessionStore(), `${agentSource}:conversation-web`).get(`${agentSource}:conversation-web`)).toBeUndefined();
 
     const page = await app.request(initUrl!);
     expect(page.status).toBe(200);
@@ -766,7 +793,7 @@ describe("Web Session Init routes and client integration", () => {
       body: JSON.stringify({ teamId: "team-a", agentId: "agent-a", taskId: "task-a" }),
     });
     expect(completion.status).toBe(200);
-    expect(getSessionStore().get(`${agentSource}:conversation-web`)?.status).toBe("initialized");
+    expect(scopedStore(getSessionStore(), `${agentSource}:conversation-web`).get(`${agentSource}:conversation-web`)?.status).toBe("initialized");
     expect(bindingRepo.values.get("space-a:conversation-web")).toMatchObject({
       outcome: "initialized",
       teamId: "team-a",
@@ -783,7 +810,7 @@ describe("Web Session Init routes and client integration", () => {
         if (recoverySource === "l2b") setSessionRepo(new MemorySessionRepo());
         getSessionStore().setBindingRepo(bindingRepo);
       }
-      const recover = vi.spyOn(getSessionStore(), "getOrRecover");
+      const recover = vi.spyOn(SessionStore.prototype, "getOrRecover");
       const retry = await app.request(
         `http://localhost/${agentSource}/space-a/v1/chat/completions`,
         chatRequest("conversation-web", { authorization: "Bearer secret-user-key" }),
@@ -799,6 +826,42 @@ describe("Web Session Init routes and client integration", () => {
     }
   });
 
+  it.each([
+    { userId: "user-b", spaceId: "space-a", preset: false },
+    { userId: "user-b", spaceId: "space-a", preset: true },
+    { userId: "user-a", spaceId: "space-b", preset: false },
+  ])("HTTP 同 session key 按 $userId/$spaceId 隔离，静态预选=$preset", async ({ userId, spaceId, preset }) => {
+    const app = createApp(config());
+    const sessionKey = "shared-conversation";
+    const first = await app.request("http://localhost/openclaw/space-a/v1/chat/completions", chatRequest(sessionKey));
+    const firstUrl = first.headers.get("x-memory-session-init-url")!;
+    const selection = (teamId: string, agentId: string, taskId?: string) => ({
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ teamId, agentId, taskId }),
+    });
+    expect((await app.request(`${firstUrl}/complete`, selection("team-a", "agent-a", "task-a"))).status).toBe(200);
+    const otherHeaders = { "x-user-id": userId, ...(preset ? { "x-team-id": "team-b", "x-agent-id": "agent-b" } : {}) };
+    const otherPath = `http://localhost/openclaw/${spaceId}/v1/chat/completions`;
+    const second = await app.request(otherPath, chatRequest(sessionKey, otherHeaders));
+    expect(second.status).toBe(200);
+    if (preset) {
+      expect(second.headers.get("x-memory-session-init-url")).toBeNull();
+    } else {
+      const otherUrl = second.headers.get("x-memory-session-init-url");
+      expect(otherUrl).toBeTruthy();
+      expect(otherUrl).not.toBe(firstUrl);
+      expect((await app.request(`${otherUrl}/complete`, selection("team-b", "agent-b"))).status).toBe(200);
+    }
+    expect((await app.request(otherPath, chatRequest(sessionKey, otherHeaders))).status).toBe(200);
+    let upstreamCalls = vi.mocked(fetch).mock.calls.filter(([url]) => String(url).startsWith("http://upstream.test/"));
+    expect(String(upstreamCalls.at(-1)![1]!.body)).not.toContain("Be precise.");
+    const otherState = scopedStore(getSessionStore(), `openclaw:${sessionKey}`, userId, spaceId).get(`openclaw:${sessionKey}`)!;
+    expect(otherState.sessionInfo).toMatchObject({ user_id: userId, space_id: spaceId, team_id: "team-b", agent_id: "agent-b" });
+    expect(otherState.taskDetail).toBeNull();
+    expect((await app.request("http://localhost/openclaw/space-a/v1/chat/completions", chatRequest(sessionKey))).status).toBe(200);
+    upstreamCalls = vi.mocked(fetch).mock.calls.filter(([url]) => String(url).startsWith("http://upstream.test/"));
+    expect(String(upstreamCalls.at(-1)![1]!.body)).toContain("Be precise.");
+  });
+
   it.each([undefined, "task-a", "stale-task"])("preserves static Team/Agent registration with Task=%s", async (taskId) => {
     const app = createApp(config());
     const response = await app.request(
@@ -811,7 +874,7 @@ describe("Web Session Init routes and client integration", () => {
     );
 
     expect(response.headers.get("x-memory-session-init-url")).toBeNull();
-    expect(getSessionStore().get("openclaw:conversation-static")?.sessionInfo).toMatchObject({
+    expect(scopedStore(getSessionStore(), "openclaw:conversation-static").get("openclaw:conversation-static")?.sessionInfo).toMatchObject({
       team_id: "team-a",
       agent_id: "agent-a",
       task_id: taskId === "task-a" ? taskId : undefined,
@@ -863,7 +926,42 @@ describe("Web Session Init routes and client integration", () => {
     expect(remove).not.toHaveBeenCalled();
     expect(bindingRepo.values.get("space-a:reset-session")).toMatchObject({ teamId: "team-a", agentId: "agent-a" });
     expect(bindingRepo.putCalls).toHaveLength(1);
-    expect(getSessionStore().get("openclaw:reset-session")?.status).toBe("initialized");
+    expect(scopedStore(getSessionStore(), "openclaw:reset-session").get("openclaw:reset-session")?.status).toBe("initialized");
+  });
+
+  it.each(["memory-bridge/v3/atomic/query", "skill-bridge/v3/skill/search"])("%s 拒绝跨空间 L1 与多 owner 歧义，不回退到任意 binding", async path => {
+    const service = new WebSessionInitService();
+    const token = issueChallenge(service, getSessionStore(), metadata, "bridge-shared");
+    expect(await service.complete(token, { teamId: "team-a", agentId: "agent-a" })).toMatchObject({ ok: true });
+    const app = createApp(config());
+    const request = (spaceId: string) => app.request(`http://localhost/${path}`, {
+      method: "POST", headers: { "content-type": "application/json", "x-conversation-id": "bridge-shared", "x-tdai-service-id": spaceId }, body: "{}",
+    });
+    expect((await request("space-b")).status).toBe(401);
+    const key = "openclaw:bridge-shared";
+    const state = scopedStore(getSessionStore(), key).get(key)!;
+    await scopedStore(getSessionStore(), key, "user-b").set(key, {
+      ...state, userId: "user-b", sessionInfo: { ...state.sessionInfo!, user_id: "user-b", team_id: "team-b", agent_id: "agent-b" },
+    });
+    const result = await request("space-a");
+    expect(result.status).toBe(401);
+    expect(await result.json()).toMatchObject({ code: 40101, message: expect.stringContaining("ambiguous") });
+  });
+
+  it("既有 reset 命令只重置请求用户的视图，不删除异主 binding", async () => {
+    const { executeSessionReset } = await import("../../mem-command/commands/session-reset.js");
+    const service = new WebSessionInitService();
+    const token = issueChallenge(service, getSessionStore(), metadata, "reset-shared", "codebuddy");
+    expect(await service.complete(token, { teamId: "team-a", agentId: "agent-a" })).toMatchObject({ ok: true });
+    const before = bindingRepo.values.get("space-a:reset-shared");
+    const result = await executeSessionReset({
+      sessionKey: "reset-shared", agentSource: "codebuddy", spaceId: "space-a", userId: "user-b",
+      protocol: "openai", stream: false, config: config(),
+    } as Parameters<typeof executeSessionReset>[0]);
+    expect(result.success).toBe(true);
+    expect(scopedStore(getSessionStore(), "codebuddy:reset-shared").get("codebuddy:reset-shared")?.status).toBe("initialized");
+    expect(scopedStore(getSessionStore(), "codebuddy:reset-shared", "user-b").get("codebuddy:reset-shared")?.status).toBe("uninitialized");
+    expect(bindingRepo.values.get("space-a:reset-shared")).toEqual({ ...before, identityAmbiguous: true });
   });
 
   it("rejects an unknown route token", async () => {
@@ -941,7 +1039,7 @@ describe("Web Session Init routes and client integration", () => {
     const cfg = config();
     cfg.sessionInit.headerAutoSelect!.onMismatch = "bypass";
     if (scenario === "pending-form") {
-      await getSessionStore().set("openclaw:fallback-session", {
+      await scopedStore(getSessionStore(), "openclaw:fallback-session").set("openclaw:fallback-session", {
         status: "pending_asset_confirm", keyId: "fallback-session", startedAt: Date.now(),
         attemptCount: 1, userId: "user-a",
       });
@@ -955,7 +1053,7 @@ describe("Web Session Init routes and client integration", () => {
     );
     expect(response.status).toBe(200);
     expect(response.headers.get("x-memory-session-init-url")).toMatch(/\/session-init\//);
-    expect(getSessionStore().get("openclaw:fallback-session")?.status).not.toBe("initialized");
+    expect(scopedStore(getSessionStore(), "openclaw:fallback-session").get("openclaw:fallback-session")?.status).not.toBe("initialized");
     expect(bindingRepo.putCalls).toHaveLength(0);
     expect(cfg.sessionInit.headerAutoSelect!.onMismatch).toBe("bypass");
   });
@@ -1098,7 +1196,7 @@ describe("Web Session Init routes and client integration", () => {
     expect(response.status).toBe(410);
     expect(response.headers.get("cache-control")).toBe("no-store");
     expect(await response.json()).toMatchObject({ error: "expired_token" });
-    expect(getSessionStore().get("openclaw:route-expires-during-metadata")).toBeUndefined();
+    expect(scopedStore(getSessionStore(), "openclaw:route-expires-during-metadata").get("openclaw:route-expires-during-metadata")).toBeUndefined();
     expect(bindingRepo.putCalls).toHaveLength(0);
   });
 

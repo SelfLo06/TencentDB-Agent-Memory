@@ -13,7 +13,7 @@
 import { randomBytes } from "node:crypto";
 
 import type { MetadataClient } from "../meta/client.js";
-import type { SessionStore, SessionIdentity } from "./store.js";
+import { sessionIdentityKey, type SessionStore, type SessionIdentity } from "./store.js";
 import type { AgentDetail, SessionInitState, TaskDetail, TeamOption } from "./types.js";
 import { buildSessionInfo } from "./registrar.js";
 import { resolvePresetIdentity } from "./preset.js";
@@ -84,12 +84,13 @@ export class WebSessionInitService {
   }
 
   issue(input: WebInitChallengeInput): { ok: true; value: { token: string; expiresAt: number } } | WebInitFailure {
+    input = { ...input, identity: { ...input.identity }, store: input.store.forIdentity(input.identity) };
     this.pruneExpired();
     if (input.store.get(input.compositeKey)?.status === "initialized") {
       return { ok: false, code: "already_initialized", message: "This session is already initialized." };
     }
 
-    const sessionScope = this.sessionScope(input.identity, input.compositeKey);
+    const sessionScope = sessionIdentityKey(input.identity);
     // 每个 session 同时只允许一个 active challenge：重复 issue 返回未消费的
     // token 而不是再铸一个 —— 否则旧 token 仍然有效，两个浏览器 tab 可以
     // 各自 complete 产生竞态。
@@ -309,12 +310,6 @@ export class WebSessionInitService {
         })),
       };
     }));
-  }
-
-  // NUL 分隔：compositeKey 本身含 ':'（`${agentSource}:${sessionKey}`），
-  // 用 ':' 拼 scope 会让不同的 (spaceId, userId) 组合碰撞到同一个 key 上。
-  private sessionScope(identity: SessionIdentity, compositeKey: string): string {
-    return `${identity.spaceId ?? ""}\u0000${identity.userId}\u0000${compositeKey}`;
   }
 
   private pruneExpired(): void {
