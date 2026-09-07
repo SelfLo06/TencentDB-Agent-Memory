@@ -19,7 +19,7 @@ const bob = { ...alice, userId: "bob" };
 const key = "openclaw:same";
 const directories: string[] = [];
 
-async function fixture() {
+async function fixture(spaceId = "space-a") {
   const directory = await mkdtemp(join(tmpdir(), "session-collision-"));
   directories.push(directory);
   const storage = new FsStorage(directory);
@@ -32,7 +32,7 @@ async function fixture() {
   const service = new WebSessionInitService();
   async function init(userId: string) {
     const issued = service.issue({
-      compositeKey: key, sessionKey: "same", identity: { ...alice, userId }, store,
+      compositeKey: key, sessionKey: "same", identity: { ...alice, userId, spaceId }, store,
       metadataClient: {
         async listTeams() { return [{ team_id: `${userId}-team`, name: userId }]; },
         async listAgents() { return [{ agent_id: `${userId}-agent`, name: userId }]; },
@@ -45,6 +45,8 @@ async function fixture() {
   }
   const config = structuredClone(DEFAULT_CONFIG);
   config.coreSkill.endpoint = "http://core.test";
+  config.tdai!.serviceId = spaceId;
+  config.coreSkill.serviceId = spaceId;
   config.redis.enabled = false;
   config.storage.enabled = false;
   const fetchMock = vi.fn(async () => Response.json({ code: 0, data: {} }));
@@ -52,7 +54,9 @@ async function fixture() {
   app.all("/memory-bridge/*", createMemoryBridgeHandler(config, { fetcher: fetchMock }));
   app.all("/skill-bridge/*", createSkillBridgeHandler(config, { fetcher: fetchMock }));
   async function bridge(path: string, session = "same") {
-    return app.request(path, { method: "POST", headers: { "content-type": "application/json", "x-conversation-id": session, "x-tdai-service-id": "space-a" }, body: "{}" });
+    const headers: Record<string, string> = { "content-type": "application/json", "x-conversation-id": session };
+    if (spaceId) headers["x-tdai-service-id"] = spaceId;
+    return app.request(path, { method: "POST", headers, body: "{}" });
   }
   return { directory, storage, repo, bindings, store, init, bridge, fetchMock };
 }
@@ -105,6 +109,16 @@ describe("单槽 binding 的持久化冲突降级", () => {
     expect((await f.bridge(path)).status).toBe(401);
     expect((await f.bridge(path, key)).status).toBe(401);
     expect(f.fetchMock).not.toHaveBeenCalled();
+  });
+
+  it.each(paths)("默认空间冷启动仍通过 %s 的唯一 binding 回退", async path => {
+    const f = await fixture("");
+    await f.init("alice");
+    setSessionRepo({ upsert: async () => {}, getBySessionId: async () => null, deleteBySessionId() {}, loadAllInitialized: async () => [] });
+    __resetSessionStoreForTests();
+    const cold = getSessionStore();
+    cold.setBindingRepo(f.bindings);
+    expect((await f.bridge(path)).status).toBe(200);
   });
 
   it("foreign delete/reset 保留资产；owner reset 留歧义 tombstone；重新初始化不清标记", async () => {

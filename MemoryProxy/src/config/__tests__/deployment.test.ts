@@ -15,7 +15,7 @@ afterEach(() => {
   }
 });
 
-function generateConfig(externalUrl?: string, publicBaseUrl?: string) {
+function generateConfig(externalUrl?: string, publicBaseUrl?: string, proxyPort = "18096") {
   const directory = mkdtempSync(join(tmpdir(), "proxy-deployment-test-"));
   temporaryDirectories.push(directory);
   const envFile = join(directory, ".env");
@@ -35,7 +35,7 @@ esac
     DOCKER_CALLS: join(directory, "docker-calls"),
     PROXY_CONFIG_DIR: directory,
     PROXY_IMAGE: "local/proxy:test",
-    PROXY_PORT: "18096",
+    PROXY_PORT: proxyPort,
     PROXY_UPSTREAM_URL: "https://upstream.example/v1",
     PROXY_UPSTREAM_API_KEY: "test-upstream-key",
     PROXY_UPSTREAM_MODEL: "test-model",
@@ -52,6 +52,18 @@ esac
 }
 
 describe("部署脚本的主动工具地址配置", () => {
+  it.each(["1", "65535", "08080"]) ("start-proxy 接受合法宿主端口 %s", proxyPort => {
+    const generated = generateConfig(undefined, undefined, proxyPort);
+    generated.run();
+    expect(readFileSync(join(generated.directory, "docker-calls"), "utf8")).toContain(`-p ${Number(proxyPort)}:8096`);
+  });
+
+  it.each(["0", "00000", "65536", "99999", "-1", "abc", ""]) ("start-proxy 在 Docker 前拒绝非法宿主端口 %s", proxyPort => {
+    const generated = generateConfig(undefined, undefined, proxyPort);
+    expect(generated.run).toThrow();
+    expect(() => readFileSync(join(generated.directory, "docker-calls"))).toThrow();
+  });
+
   it.each(["1", "65535", "00001", "08080"])("两条部署路径接受合法十进制端口 %s", port => {
     const address = `http://[::1]:${port}`;
     const generated = generateConfig(address, address);

@@ -267,7 +267,7 @@ export function createMemoryBridgeHandler(
       return envelope(40101, `${TAG} ambiguous session identity`, 401);
     }
     let ids = resolved.l1 ? toIdFields(resolved.l1.state, resolved.l1.keyId) : null;
-    if (!ids && resolved.binding && spaceId) {
+    if (!ids && resolved.binding) {
       console.log(`${TAG} session=${sessionKey} L1 miss → L2 binding lookup (space=${spaceId})`);
       ids = bindingToIdFields(resolved.binding, spaceId, resolved.sessionId);
     }

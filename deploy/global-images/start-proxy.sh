@@ -21,6 +21,17 @@ require_vars \
   PROXY_IMAGE PROXY_PORT \
   PROXY_UPSTREAM_URL PROXY_UPSTREAM_API_KEY PROXY_UPSTREAM_MODEL
 
+valid_decimal_port() {
+  [[ "$1" =~ ^[0-9]+$ ]] || return 1
+  local port="${1#${1%%[!0]*}}"
+  [[ -n "$port" ]] || port=0
+  (( port >= 1 && port <= 65535 ))
+}
+if ! valid_decimal_port "$PROXY_PORT"; then
+  die "PROXY_PORT 必须是十进制整数，端口范围为 1–65535。"
+fi
+PROXY_PORT="${PROXY_PORT#${PROXY_PORT%%[!0]*}}"
+
 EXTERNAL_GATEWAY_YAML=""
 SESSION_INIT_PUBLIC_BASE_YAML=""
 valid_proxy_base_url() {
